@@ -82,3 +82,37 @@ When a module changes how the app fits together, add a section here:
 **Risks and open questions:** cost, privacy, accuracy or safety risks, and how
 you handle them.
 ```
+
+## Module 2: Ask Copper
+
+**Summary:** a floating chat panel that answers shoppers' price, total and
+stock questions by calling four tools instead of guessing, and shows each step
+(thinking, tool calls, reply) as it streams in. A **Use tools** switch runs the
+same model with no tools, so the two answers can be compared.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Page / route | `app/page.tsx` | Mounts `<AskCopper>` and passes `isAiConfigured()` down. No new routes |
+| Components | `components/copper/ask-copper.tsx`, `components/copper/ask-copper-tool-card.tsx` | The launcher, the Sheet panel with two separate chats (tools on and off), the stations rail and the tool-call card |
+| Server Action | `lib/copper/assistant/ask.ts` | `askCopper({ messages, useTools })` returns a `Live<Progress>` at once and fills it from the model stream |
+| Tools | `lib/copper/assistant/tools.ts` | `get_products`, `get_prices`, `calculate_cost`, `check_availability`. Prices from `catalog.ts`, stock from `readInventory()` on every call |
+| Instructions | `lib/copper/assistant/instructions.ts` | Copper's system prompt, sent only with tools on |
+| Data | `lib/copper/data/inventory.json` | Stock per product colour, with the next shipment date |
+| AI calls | `lib/ai/call.ts` (module 2, `ask-copper`) | `callStream` to the default Gemini model with thought summaries; up to 5 steps with tools on. One `ai_calls` row per question |
+
+**Data flow:** shopper asks → `AskCopper` sends that chat's history to the
+`askCopper` Server Action → `callStream` → the model calls tools, which read
+the catalog and stock → each stream part updates a `Progress` → the panel reads
+each update with `readLive()` and redraws.
+
+**Decisions and trade-offs:** a Server Action returning a live value, not an
+API route, keeps the site a single page. Each update carries the whole
+`Progress` as a fresh copy, so a missed update loses nothing. Tools off sends
+no instructions either, so the comparison shows the model answering purely
+from memory.
+
+**Risks and open questions:** with tools off, answers are often invented; the
+panel labels them "Answered without tools: may be made up". Each question with
+tools on can take up to 5 model steps, so cost per question varies; the
+`ai_calls` log shows it. If stock can't be read, the tool says so rather than
+guessing.

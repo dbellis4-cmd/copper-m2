@@ -5,8 +5,12 @@
 // without the tools, and sends back each step as it happens, so the panel can
 // show Copper thinking and using its tools. The contract is in
 // specs/module-2/spec.md.
-import type { Live } from "@/lib/ai/live";
-import type { Progress } from "@/lib/copper/assistant/progress";
+import { stepCountIs } from "ai";
+import { callStream, THOUGHT_SUMMARIES } from "@/lib/ai/call";
+import { createLive, type Live } from "@/lib/ai/live";
+import { COPPER_INSTRUCTIONS } from "@/lib/copper/assistant/instructions";
+import type { Progress, ToolStep } from "@/lib/copper/assistant/progress";
+import { copperTools } from "@/lib/copper/assistant/tools";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -20,12 +24,120 @@ export type AskCopperResult = { progress: Live<Progress> };
 /** At most this many model steps (tool calls plus the reply) per question. */
 const MAX_STEPS = 5;
 
+const SORRY_ERROR =
+  "Sorry, something went wrong on my end. Please try asking again.";
+const SORRY_EMPTY =
+  "Sorry, I couldn't come up with an answer to that. Could you ask it another way?";
+
+/** A copy that shares nothing with `progress`, so earlier updates never change. */
+function snapshot(progress: Progress): Progress {
+  return { ...progress, steps: progress.steps.map((step) => ({ ...step })) };
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function askCopper(
   request: AskCopperRequest,
 ): Promise<AskCopperResult> {
-  // TODO (AC-M2.11 to AC-M2.15): stream the question to the model and send
-  // back each step. MAX_STEPS is the step limit to pass to stopWhen.
-  void request;
-  void MAX_STEPS;
-  throw new Error("askCopper isn't built yet");
+  // Only the two fields the contract allows reach the model.
+  const messages = request.messages.map(({ role, content }) => ({
+    role,
+    content,
+  }));
+  const useTools = request.useTools === true;
+
+  const { live, update, done } = createLive<Progress>();
+  const progress: Progress = { steps: [], reply: "", status: "working" };
+  const toolStep = (id: string) =>
+    progress.steps.find(
+      (step): step is ToolStep => step.type === "tool" && step.id === id,
+    );
+
+  // Read the stream in the background, so the panel gets { progress } now
+  // and draws each step as it arrives.
+  void (async () => {
+    try {
+      // Tools off sends no instructions and no tools: just the conversation,
+      // so the model answers from memory with nothing telling it to check.
+      const result = callStream(
+        { module: 2, feature: "ask-copper" },
+        useTools
+          ? {
+              instructions: COPPER_INSTRUCTIONS,
+              messages,
+              tools: copperTools,
+              stopWhen: stepCountIs(MAX_STEPS),
+              providerOptions: THOUGHT_SUMMARIES,
+            }
+          : { messages, providerOptions: THOUGHT_SUMMARIES },
+      );
+
+      for await (const part of result.fullStream) {
+        switch (part.type) {
+          case "reasoning-delta": {
+            const last = progress.steps.at(-1);
+            if (last?.type === "thinking") last.text += part.text;
+            else progress.steps.push({ type: "thinking", text: part.text });
+            break;
+          }
+          case "tool-input-start":
+            // The model has named the tool; its input isn't known yet.
+            progress.steps.push({
+              type: "tool",
+              id: part.id,
+              name: part.toolName,
+              state: "calling",
+            });
+            break;
+          case "tool-call": {
+            const step = toolStep(part.toolCallId);
+            if (step) step.input = part.input;
+            else
+              progress.steps.push({
+                type: "tool",
+                id: part.toolCallId,
+                name: part.toolName,
+                state: "calling",
+                input: part.input,
+              });
+            break;
+          }
+          case "tool-result": {
+            const step = toolStep(part.toolCallId);
+            if (!step) continue;
+            step.output = part.output;
+            step.state = "done";
+            break;
+          }
+          case "tool-error": {
+            const step = toolStep(part.toolCallId);
+            if (!step) continue;
+            step.output = messageOf(part.error);
+            step.state = "error";
+            break;
+          }
+          case "text-delta":
+            progress.reply += part.text;
+            break;
+          case "error":
+            throw part.error;
+          default:
+            continue;
+        }
+        update(snapshot(progress));
+      }
+
+      if (!progress.reply.trim()) progress.reply = SORRY_EMPTY;
+      progress.status = "done";
+    } catch (error) {
+      console.error("askCopper failed:", messageOf(error));
+      if (!progress.reply.trim()) progress.reply = SORRY_ERROR;
+      progress.status = "error";
+    }
+    done(snapshot(progress));
+  })();
+
+  return { progress: live };
 }
