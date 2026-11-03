@@ -100,7 +100,7 @@ same model with no tools, so the two answers can be compared.
 | Server Action | `lib/copper/assistant/ask.ts` | `askCopper({ messages, useTools })` returns a `Live<Progress>` at once and fills it from the model stream |
 | Tools | `lib/copper/assistant/tools.ts` | `get_products`, `get_prices`, `calculate_cost`, `check_availability`. Prices from `catalog.ts`, stock from `readInventory()` on every call |
 | Instructions | `lib/copper/assistant/instructions.ts` | Copper's system prompt, sent only with tools on |
-| Data | `lib/copper/data/inventory.json` | Stock per product colour, with the next shipment date |
+| Data | Supabase `inventory` table (`supabase/migrations/`, `supabase/seed.sql`), read by `readInventory()` in `lib/copper/inventory.ts` | Stock per product colour, with the next shipment date. Editable in the Supabase Table Editor with no deploy; `null` ("can't check") when Supabase isn't set up or can't be reached |
 | AI calls | `lib/ai/call.ts` (module 2, `ask-copper`) | `callStream` to the default Gemini model with thought summaries; up to 5 steps with tools on. One `ai_calls` row per question |
 
 **Data flow:** shopper asks → `AskCopper` sends that chat's history to the
